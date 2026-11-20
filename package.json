@@ -1,0 +1,38 @@
+{
+  "name": "event-live-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server: fetch X hashtag posts, group by talk timetable, render phone-friendly HTML",
+  "type": "module",
+  "bin": {
+    "event-live-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "x",
+    "twitter",
+    "meetup",
+    "live"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
