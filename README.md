@@ -87,7 +87,11 @@ claude mcp add event-live --env X_BEARER_TOKEN=$X_BEARER_TOKEN -- node /絶対�
 3. 呼び出し側 AI が各枠の投稿を読んで **要点リストを作成**
 4. **`render_html`** — `summaries` に要点を渡して HTML 出力
 
-状態は `.data/<event_id>/state.json`（投稿 + カーソル）、グルーピングは `.data/<event_id>/grouping.json`、HTML 既定は `output/<event_id>.html` です。いずれも `.gitignore` 済みです。
+状態は `.data/<event_dir>/state.json`（投稿 + カーソル）、グルーピングは `.data/<event_dir>/grouping.json`、HTML 既定は `output/<event_id>.html` です。いずれも `.gitignore` 済みです。
+
+- `event_id` は `[A-Za-z0-9._-]` 推奨。それ以外（日本語・`/` など）は衝突しないよう base64url ディレクトリ名にエンコードします。
+- 同じ `event_id` に別ハッシュタグを紐づけることはできません（別 `event_id` を使ってください）。
+- `fetch_posts` はイベント単位のファイルロックで、並行呼び出し（Claude Code と Cursor 同時など）でも state を潰しません。
 
 ### タイムテーブル例
 

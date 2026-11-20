@@ -148,3 +148,78 @@ describe("fetchNewPosts dedupe + since_id cursor", () => {
     expect(second.totalPostCount).toBe(1);
   });
 });
+
+describe("fetchNewPosts concurrency + hashtag guard", () => {
+  it("serializes overlapping fetches so both result sets are kept", async () => {
+    const dataDir = await makeDataDir();
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let aStarted = false;
+
+    const clientA = mockClient(async () => {
+      aStarted = true;
+      await gateA;
+      return pageFromPosts([FIXTURE_POSTS[0]]); // id 1001
+    });
+    const clientB = mockClient(async () => {
+      return pageFromPosts([FIXTURE_POSTS[1]]); // id 1002
+    });
+
+    const pA = fetchNewPosts({
+      eventId: "shared",
+      hashtag: "demo_event",
+      startTime: "2026-11-20T10:00:00.000Z",
+      dataDir,
+      client: clientA,
+    });
+
+    // Wait until A holds the lock and is inside the API call.
+    while (!aStarted) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    const pB = fetchNewPosts({
+      eventId: "shared",
+      hashtag: "demo_event",
+      startTime: "2026-11-20T10:00:00.000Z",
+      dataDir,
+      client: clientB,
+    });
+
+    // Give B a moment to block on the lock, then finish A.
+    await new Promise((r) => setTimeout(r, 30));
+    releaseA();
+
+    const [a, b] = await Promise.all([pA, pB]);
+    expect(a.newPostCount + b.newPostCount).toBe(2);
+
+    const state = await loadEventState(dataDir, "shared");
+    expect(Object.keys(state!.posts).sort()).toEqual(["1001", "1002"]);
+    expect(state!.sinceId).toBe("1002");
+  });
+
+  it("rejects reusing event_id with a different hashtag", async () => {
+    const dataDir = await makeDataDir();
+    const client = mockClient(() => pageFromPosts([FIXTURE_POSTS[0]]));
+
+    await fetchNewPosts({
+      eventId: "bound",
+      hashtag: "demo_event",
+      startTime: "2026-11-20T10:00:00.000Z",
+      dataDir,
+      client,
+    });
+
+    await expect(
+      fetchNewPosts({
+        eventId: "bound",
+        hashtag: "other_tag",
+        startTime: "2026-11-20T10:00:00.000Z",
+        dataDir,
+        client,
+      })
+    ).rejects.toThrow(/already bound to #demo_event/);
+  });
+});

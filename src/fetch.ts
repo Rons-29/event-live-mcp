@@ -6,6 +6,7 @@ import type {
   XTweet,
 } from "./types.js";
 import type { XClient } from "./x-client.js";
+import { withEventLock } from "./lock.js";
 import { createEmptyState, loadEventState, saveEventState } from "./state.js";
 import { extractUrlsFromText } from "./slides.js";
 
@@ -33,7 +34,7 @@ export interface FetchResult {
   statePath: string;
 }
 
-function normalizeHashtag(raw: string): string {
+export function normalizeHashtag(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("hashtag must not be empty");
   return trimmed.startsWith("#") ? trimmed.slice(1) : trimmed;
@@ -93,27 +94,38 @@ function parsePage(
   };
 }
 
-/**
- * Fetch only posts newer than the persisted since_id cursor.
- * First run uses start_time; later runs use since_id (mutually exclusive per X API).
- * Posts already in state are never re-stored (dedupe by id).
- */
-export async function fetchNewPosts(options: FetchOptions): Promise<FetchResult> {
-  const hashtag = normalizeHashtag(options.hashtag);
-  let state =
-    (await loadEventState(options.dataDir, options.eventId)) ??
-    createEmptyState({
+function assertHashtagMatches(state: EventState, hashtag: string): void {
+  const existing = normalizeHashtag(state.hashtag);
+  if (existing !== hashtag) {
+    throw new Error(
+      `event_id "${state.eventId}" is already bound to #${existing}; ` +
+        `refusing to switch to #${hashtag}. Use a different event_id for the new hashtag.`
+    );
+  }
+}
+
+async function fetchNewPostsUnlocked(
+  options: FetchOptions,
+  hashtag: string
+): Promise<FetchResult> {
+  // Load INSIDE the lock so concurrent callers see each other's writes.
+  const loaded = await loadEventState(options.dataDir, options.eventId);
+  let state: EventState;
+  if (loaded) {
+    assertHashtagMatches(loaded, hashtag);
+    state = {
+      ...loaded,
+      eventId: options.eventId,
+      hashtag,
+      startTime: loaded.sinceId ? loaded.startTime : options.startTime,
+    };
+  } else {
+    state = createEmptyState({
       eventId: options.eventId,
       hashtag,
       startTime: options.startTime,
     });
-
-  // Keep hashtag/startTime in sync with the latest call (cursor + posts preserved).
-  state = {
-    ...state,
-    hashtag,
-    startTime: state.sinceId ? state.startTime : options.startTime,
-  };
+  }
 
   const gathered: Post[] = [];
   let nextToken: string | undefined;
@@ -159,7 +171,6 @@ export async function fetchNewPosts(options: FetchOptions): Promise<FetchResult>
 
   const statePath = await saveEventState(options.dataDir, state);
 
-  // Stable order for tool output
   newPosts.sort((a, b) => {
     const t = Date.parse(a.createdAt) - Date.parse(b.createdAt);
     return t !== 0 ? t : a.id.localeCompare(b.id);
@@ -174,4 +185,19 @@ export async function fetchNewPosts(options: FetchOptions): Promise<FetchResult>
     newPosts,
     statePath,
   };
+}
+
+/**
+ * Fetch only posts newer than the persisted since_id cursor.
+ * First run uses start_time; later runs use since_id (mutually exclusive per X API).
+ * Posts already in state are never re-stored (dedupe by id).
+ * The full load/fetch/save path is serialized per event (cross-process lock).
+ */
+export async function fetchNewPosts(
+  options: FetchOptions
+): Promise<FetchResult> {
+  const hashtag = normalizeHashtag(options.hashtag);
+  return withEventLock(options.dataDir, options.eventId, () =>
+    fetchNewPostsUnlocked(options, hashtag)
+  );
 }

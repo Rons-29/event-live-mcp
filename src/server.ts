@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { fetchNewPosts } from "./fetch.js";
 import { groupFromState } from "./group.js";
+import { withEventLock } from "./lock.js";
 import { resolveDataDir, resolveOutputDir } from "./paths.js";
 import { renderHtml, writeHtmlFile } from "./render.js";
 import {
@@ -82,7 +83,9 @@ export function createServer(deps: ServerDeps = {}): McpServer {
         event_id: z
           .string()
           .min(1)
-          .describe("Local event key for state files (e.g. demo-event-2026-11-20)"),
+          .describe(
+            "Local event key for state files (e.g. demo-event-2026-11-20). Prefer [A-Za-z0-9._-]; other characters are base64url-encoded so distinct ids never collide."
+          ),
         hashtag: z
           .string()
           .min(1)
@@ -140,20 +143,22 @@ export function createServer(deps: ServerDeps = {}): McpServer {
     async ({ event_id, timetable, data_dir }) => {
       try {
         const dir = resolveDataDir(data_dir);
-        const state = await loadEventState(dir, event_id);
-        if (!state) {
-          throw new Error(
-            `No state for event_id=${event_id}. Call fetch_posts first.`
-          );
-        }
-        const slots = timetable as TalkSlot[];
-        const grouping = groupFromState(state, slots);
-        const groupingPath = await saveGrouping(dir, grouping);
-        return jsonResult({
-          event_id: grouping.eventId,
-          grouping_path: groupingPath,
-          talks: grouping.talks,
-          unassigned: grouping.unassigned,
+        return await withEventLock(dir, event_id, async () => {
+          const state = await loadEventState(dir, event_id);
+          if (!state) {
+            throw new Error(
+              `No state for event_id=${event_id}. Call fetch_posts first.`
+            );
+          }
+          const slots = timetable as TalkSlot[];
+          const grouping = groupFromState(state, slots);
+          const groupingPath = await saveGrouping(dir, grouping);
+          return jsonResult({
+            event_id: grouping.eventId,
+            grouping_path: groupingPath,
+            talks: grouping.talks,
+            unassigned: grouping.unassigned,
+          });
         });
       } catch (err) {
         return errorResult(err);
