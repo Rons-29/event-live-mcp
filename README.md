@@ -6,9 +6,9 @@
 
 | ツール | 役割 |
 |--------|------|
-| `fetch_posts` | ハッシュタグ + 開始時刻で **未取得の投稿だけ** を X API v2 Recent Search から取得。`since_id` カーソルと投稿 ID で永続デデュープ |
-| `group_posts` | 呼び出し側が渡すタイムテーブル（登壇者・題名・開始/終了）で投稿を枠に割当。枠外は `unassigned`。スライド系 URL を抽出 |
-| `render_html` | 枠ごとの **要点（呼び出し側が渡す）**・スライドリンク・元投稿リンク入りの簡易 HTML を書き出し |
+| `fetch_posts` | ハッシュタグ + 開始時刻で **未取得の投稿だけ** を X API v2 Recent Search から取得。`since_id` カーソル・投稿 ID・編集履歴で永続デデュープ。RT 除外 |
+| `group_posts` | 呼び出し側が渡すタイムテーブル（登壇者・題名・開始/終了・任意の資料 URL）で投稿を枠に割当。枠外は `unassigned`。スライド系 URL を抽出 |
+| `render_html` | 枠ごとの **要点（呼び出し側が渡す）**・資料/スライドリンク・元投稿リンク入りの簡易 HTML を書き出し |
 
 対象外: リモート HTTP サーバー、ログイン、課金、掲示板、サーバー側の定期ポーリング。
 
@@ -93,6 +93,13 @@ claude mcp add event-live --env X_BEARER_TOKEN=$X_BEARER_TOKEN -- node /絶対�
 - 同じ `event_id` に別ハッシュタグを紐づけることはできません（別 `event_id` を使ってください）。
 - `fetch_posts` はイベント単位のファイルロックで、並行呼び出し（Claude Code と Cursor 同時など）でも state を潰しません。
 
+### デデュープ / 取得ルール
+
+- **投稿 ID**: 一度保存した ID は再保存しない。
+- **編集投稿**: X API の `edit_history_tweet_ids` で同一チェーンとみなす。編集前・編集後が別 ID で返っても **1 投稿** として数え、**最新版だけ** を保持する（同一 fetch 内でも、前回 fetch の原文 → 次回 fetch の編集版でも同じ）。
+- **RT**: クエリに `-is:retweet` を付け、さらに `referenced_tweets.type === retweeted`（および `RT @` フォールバック）で除外。引用ポストは対象外（残す）。
+- **カーソル**: 取得済みの最大 snowflake ID を `since_id` として永続化（編集履歴上の古い ID もカーソル計算に含める）。
+
 ### タイムテーブル例
 
 ```json
@@ -103,11 +110,20 @@ claude mcp add event-live --env X_BEARER_TOKEN=$X_BEARER_TOKEN -- node /絶対�
     "title": "Talk A",
     "startTime": "2026-11-20T10:00:00+09:00",
     "endTime": "2026-11-20T10:30:00+09:00"
+  },
+  {
+    "id": "talk-b",
+    "speaker": "Bob Example",
+    "title": "Talk B",
+    "startTime": "2026-11-20T10:30:00+09:00",
+    "endTime": "2026-11-20T11:30:00+09:00",
+    "materialsUrl": "https://speakerdeck.com/bob_fixture/talk-b-official"
   }
 ]
 ```
 
-開始は inclusive、終了は exclusive です。
+- 開始は inclusive、終了は exclusive。
+- `materialsUrl` は任意。呼び出し側が知っている公式資料 / スライド URL を渡す（この版では公式ページのスクレイピングはしない）。HTML では投稿から抽出した URL とマージし、同一 URL は 1 回だけ出す（資料由来を優先表示）。
 
 ## テスト
 
@@ -117,7 +133,7 @@ claude mcp add event-live --env X_BEARER_TOKEN=$X_BEARER_TOKEN -- node /絶対�
 npm test
 ```
 
-カバー範囲: 反復 fetch のデデュープ / `since_id`、タイムテーブル境界と `unassigned`、スライド URL 抽出、同一入力での HTML バイト一致、トークンのログ漏れ防止。
+カバー範囲: 反復 fetch のデデュープ / `since_id`、編集履歴の同一 fetch・横断 fetch、RT 除外、`materialsUrl` の HTML マージ、タイムテーブル境界と `unassigned`、スライド URL 抽出、同一入力での HTML バイト一致、トークンのログ漏れ防止。
 
 ## 開発
 
@@ -140,5 +156,6 @@ MIT
 
 - [Model Context Protocol — TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
 - [X API: Search recent posts](https://docs.x.com/x-api/posts/search/api-reference/get-tweets-search-recent)（Recent Search / `since_id` / `start_time`）
+- [How to analyze edited Tweets with the Twitter API v2](https://dev.to/suhemparack/how-to-analyze-edited-tweets-with-the-twitter-api-v2-using-python-odj)（`edit_history_tweet_ids` / `edit_controls`）
 - [Claude Code — MCP](https://docs.anthropic.com/en/docs/claude-code/mcp)
 - [Cursor — Model Context Protocol](https://docs.cursor.com/context/model-context-protocol)

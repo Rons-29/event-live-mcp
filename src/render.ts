@@ -50,14 +50,19 @@ function renderKeyPoints(points: string[]): string {
   return `<ul class="keypoints">\n${items}\n</ul>`;
 }
 
+function linkLabel(link: SlideLink): string {
+  if (link.fromMaterials) return "資料";
+  if (link.isSlideHost) return "スライド";
+  return "リンク";
+}
+
 function renderSlideLinks(links: SlideLink[]): string {
   if (links.length === 0) {
     return `<p class="muted">スライドリンクなし</p>`;
   }
   const items = links
     .map((l) => {
-      const label = l.isSlideHost ? "スライド" : "リンク";
-      return `<li><a href="${escapeHtml(l.url)}">${label}: ${escapeHtml(l.url)}</a></li>`;
+      return `<li><a href="${escapeHtml(l.url)}">${linkLabel(l)}: ${escapeHtml(l.url)}</a></li>`;
     })
     .join("\n");
   return `<ul class="slides">\n${items}\n</ul>`;

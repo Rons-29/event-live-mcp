@@ -39,6 +39,7 @@ describe("slide / URL extraction", () => {
       authorId: "u",
       authorUsername: "fixture_user",
       urls: ["https://speakerdeck.com/fixture/deck"],
+      editHistoryIds: ["9"],
     };
     expect(collectPostUrls(post).sort()).toEqual([
       "https://example.com/blog",

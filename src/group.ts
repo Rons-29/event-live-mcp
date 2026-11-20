@@ -5,7 +5,7 @@ import type {
   TalkGroup,
   TalkSlot,
 } from "./types.js";
-import { extractSlideLinks } from "./slides.js";
+import { mergeMaterialsAndPostLinks } from "./slides.js";
 
 function parseTime(iso: string): number {
   const ms = Date.parse(iso);
@@ -38,6 +38,7 @@ function emptyTalkGroup(slot: TalkSlot): TalkGroup {
     title: slot.title,
     startTime: slot.startTime,
     endTime: slot.endTime,
+    materialsUrl: slot.materialsUrl?.trim() || null,
     posts: [],
     slideLinks: [],
   };
@@ -50,6 +51,7 @@ function emptyUnassigned(): TalkGroup {
     title: "未割当",
     startTime: null,
     endTime: null,
+    materialsUrl: null,
     posts: [],
     slideLinks: [],
   };
@@ -67,7 +69,7 @@ function sortPostsByTime(posts: Post[]): Post[] {
 /**
  * Assign stored posts to timetable slots.
  * Posts outside every slot land in the `unassigned` bucket.
- * Slide/URL links are extracted per bucket.
+ * Slide/URL links are extracted per bucket and merged with optional materialsUrl.
  */
 export function groupPostsByTimetable(
   eventId: string,
@@ -94,10 +96,14 @@ export function groupPostsByTimetable(
     group.posts.push(post);
   }
 
-  for (const group of talks.values()) {
-    group.slideLinks = extractSlideLinks(group.posts);
+  for (const slot of timetable) {
+    const group = talks.get(slot.id)!;
+    group.slideLinks = mergeMaterialsAndPostLinks(
+      slot.materialsUrl,
+      group.posts
+    );
   }
-  unassigned.slideLinks = extractSlideLinks(unassigned.posts);
+  unassigned.slideLinks = mergeMaterialsAndPostLinks(null, unassigned.posts);
 
   return {
     eventId,

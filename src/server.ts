@@ -27,6 +27,13 @@ const TalkSlotSchema = z.object({
   endTime: z
     .string()
     .describe("Exclusive end time (ISO-8601, preferably with timezone)"),
+  materialsUrl: z
+    .string()
+    .url()
+    .optional()
+    .describe(
+      "Optional official materials/slides URL from the caller (not scraped). Merged with URLs found in posts."
+    ),
 });
 
 const TalkSummarySchema = z.object({
@@ -78,7 +85,7 @@ export function createServer(deps: ServerDeps = {}): McpServer {
     {
       title: "Fetch new hashtag posts",
       description:
-        "Fetch NEW X posts for a hashtag since the last fetch (X API v2 recent search). Uses a local since_id cursor so already-fetched posts are never requested or stored again. Bearer token must be in X_BEARER_TOKEN env (never pass it here).",
+        "Fetch NEW X posts for a hashtag since the last fetch (X API v2 recent search). Uses since_id + post id + edit_history_tweet_ids so already-fetched / edited posts are never double-counted (latest edit kept). Retweets are excluded. Bearer token must be in X_BEARER_TOKEN env (never pass it here).",
       inputSchema: {
         event_id: z
           .string()
@@ -114,10 +121,12 @@ export function createServer(deps: ServerDeps = {}): McpServer {
           event_id: result.eventId,
           hashtag: result.hashtag,
           new_post_count: result.newPostCount,
+          updated_post_count: result.updatedPostCount,
           total_post_count: result.totalPostCount,
           since_id: result.sinceId,
           state_path: result.statePath,
           new_posts: result.newPosts,
+          updated_posts: result.updatedPosts,
         });
       } catch (err) {
         return errorResult(err);

@@ -51,6 +51,8 @@ describe("groupPostsByTimetable", () => {
     expect(talkA.slideLinks[0].isSlideHost).toBe(true);
 
     const talkB = result.talks[1];
+    expect(talkB.materialsUrl).toContain("talk-b-official");
+    expect(talkB.slideLinks[0].fromMaterials).toBe(true);
     expect(
       talkB.slideLinks.some((l) => l.url.includes("docs.google.com/presentation"))
     ).toBe(true);

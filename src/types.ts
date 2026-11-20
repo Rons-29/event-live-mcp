@@ -7,6 +7,11 @@ export interface Post {
   authorUsername: string;
   /** Expanded URLs from entities (or parsed from text as fallback). */
   urls: string[];
+  /**
+   * X edit-history chain (oldest → newest). Always includes `id`.
+   * All versions of an edited post share one chain and count as one logical post.
+   */
+  editHistoryIds: string[];
 }
 
 /** Persisted per-event fetch cursor + post store. */
@@ -17,7 +22,10 @@ export interface EventState {
   startTime: string;
   /** Highest post id seen; used as X API since_id on later fetches. */
   sinceId: string | null;
-  /** Posts keyed by id — guarantees at-most-once storage. */
+  /**
+   * Posts keyed by the kept (latest) version id.
+   * Edit chains are collapsed so only one entry exists per logical post.
+   */
   posts: Record<string, Post>;
   updatedAt: string;
 }
@@ -31,13 +39,21 @@ export interface TalkSlot {
   startTime: string;
   /** Exclusive end (ISO-8601). */
   endTime: string;
+  /**
+   * Optional official materials / slides URL supplied by the caller
+   * (not scraped by this server). Merged with URLs extracted from posts.
+   */
+  materialsUrl?: string;
 }
 
 export interface SlideLink {
   url: string;
   /** True when host looks like a known slide host. */
   isSlideHost: boolean;
-  sourcePostId: string;
+  /** Source post id when extracted from a post; null for timetable materials. */
+  sourcePostId: string | null;
+  /** True when the URL came from TalkSlot.materialsUrl. */
+  fromMaterials: boolean;
 }
 
 export interface TalkGroup {
@@ -46,6 +62,8 @@ export interface TalkGroup {
   title: string;
   startTime: string | null;
   endTime: string | null;
+  /** Echo of timetable materialsUrl when present. */
+  materialsUrl: string | null;
   posts: Post[];
   slideLinks: SlideLink[];
 }
@@ -89,6 +107,16 @@ export interface XTweet {
   text: string;
   created_at?: string;
   author_id?: string;
+  edit_history_tweet_ids?: string[];
+  edit_controls?: {
+    edits_remaining?: number | string;
+    is_edit_eligible?: boolean;
+    editable_until?: string;
+  };
+  referenced_tweets?: Array<{
+    type: "retweeted" | "quoted" | "replied_to" | string;
+    id: string;
+  }>;
   entities?: {
     urls?: Array<{
       url?: string;

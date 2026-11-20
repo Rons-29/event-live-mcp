@@ -6,11 +6,16 @@ import type {
   XTweet,
 } from "./types.js";
 import type { XClient } from "./x-client.js";
+import {
+  maxSnowflakeId,
+  mergePostsByEditHistory,
+} from "./edits.js";
 import { withEventLock } from "./lock.js";
 import { createEmptyState, loadEventState, saveEventState } from "./state.js";
 import { extractUrlsFromText } from "./slides.js";
 
-const TWEET_FIELDS = "created_at,author_id,entities";
+const TWEET_FIELDS =
+  "created_at,author_id,entities,edit_history_tweet_ids,edit_controls,referenced_tweets";
 const EXPANSIONS = "author_id";
 const USER_FIELDS = "username,name";
 const MAX_RESULTS = 100;
@@ -27,10 +32,14 @@ export interface FetchOptions {
 export interface FetchResult {
   eventId: string;
   hashtag: string;
+  /** Newly added logical posts (not edit replacements). */
   newPostCount: number;
+  /** Existing chains replaced with a newer edit version. */
+  updatedPostCount: number;
   totalPostCount: number;
   sinceId: string | null;
   newPosts: Post[];
+  updatedPosts: Post[];
   statePath: string;
 }
 
@@ -41,20 +50,17 @@ export function normalizeHashtag(raw: string): string {
 }
 
 function buildQuery(hashtag: string): string {
-  // Prefer original posts; callers can still see RTs if X returns them for the tag.
-  return `#${hashtag} -is:reply`;
+  // Exclude pure retweets in the query; also filtered in code as defense in depth.
+  // Replies remain excluded as in v1 (quotes are kept).
+  return `#${hashtag} -is:retweet -is:reply`;
 }
 
-function compareSnowflakeIds(a: string, b: string): number {
-  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function maxId(ids: string[]): string | null {
-  if (ids.length === 0) return null;
-  return ids.reduce((best, id) =>
-    compareSnowflakeIds(id, best) > 0 ? id : best
-  );
+export function isRetweet(tweet: XTweet): boolean {
+  if ((tweet.referenced_tweets ?? []).some((r) => r.type === "retweeted")) {
+    return true;
+  }
+  // Fallback for payloads missing referenced_tweets.
+  return /^RT\s+@/i.test(tweet.text.trim());
 }
 
 function mapTweet(
@@ -68,6 +74,13 @@ function mapTweet(
       ?.map((u) => u.expanded_url || u.url || "")
       .filter(Boolean) ?? [];
   const urls = [...new Set([...entityUrls, ...extractUrlsFromText(tweet.text)])];
+  const history =
+    tweet.edit_history_tweet_ids && tweet.edit_history_tweet_ids.length > 0
+      ? [...tweet.edit_history_tweet_ids]
+      : [tweet.id];
+  if (!history.includes(tweet.id)) {
+    history.push(tweet.id);
+  }
 
   return {
     id: tweet.id,
@@ -76,21 +89,23 @@ function mapTweet(
     authorId,
     authorUsername: username,
     urls,
+    editHistoryIds: history,
   };
 }
 
 function parsePage(
   response: XSearchResponse
-): { posts: Post[]; nextToken?: string; newestId?: string } {
+): { posts: Post[]; nextToken?: string } {
   const usersById = new Map<string, { username: string }>();
   for (const user of response.includes?.users ?? []) {
     usersById.set(user.id, { username: user.username });
   }
-  const posts = (response.data ?? []).map((t) => mapTweet(t, usersById));
+  const posts = (response.data ?? [])
+    .filter((t) => !isRetweet(t))
+    .map((t) => mapTweet(t, usersById));
   return {
     posts,
     nextToken: response.meta?.next_token,
-    newestId: response.meta?.newest_id,
   };
 }
 
@@ -104,19 +119,44 @@ function assertHashtagMatches(state: EventState, hashtag: string): void {
   }
 }
 
+/** Advance since_id using kept posts and any ids observed in edit histories. */
+function advanceSinceId(
+  state: EventState,
+  observedIds: string[]
+): string | null {
+  const candidates = [
+    ...Object.keys(state.posts),
+    ...Object.values(state.posts).flatMap((p) => p.editHistoryIds),
+    ...observedIds,
+    ...(state.sinceId ? [state.sinceId] : []),
+  ];
+  return maxSnowflakeId(candidates);
+}
+
 async function fetchNewPostsUnlocked(
   options: FetchOptions,
   hashtag: string
 ): Promise<FetchResult> {
-  // Load INSIDE the lock so concurrent callers see each other's writes.
   const loaded = await loadEventState(options.dataDir, options.eventId);
   let state: EventState;
   if (loaded) {
     assertHashtagMatches(loaded, hashtag);
+    // Migrate posts that predate editHistoryIds.
+    const posts: Record<string, Post> = {};
+    for (const [id, post] of Object.entries(loaded.posts)) {
+      posts[id] = {
+        ...post,
+        editHistoryIds:
+          post.editHistoryIds && post.editHistoryIds.length > 0
+            ? post.editHistoryIds
+            : [post.id],
+      };
+    }
     state = {
       ...loaded,
       eventId: options.eventId,
       hashtag,
+      posts,
       startTime: loaded.sinceId ? loaded.startTime : options.startTime,
     };
   } else {
@@ -128,6 +168,7 @@ async function fetchNewPostsUnlocked(
   }
 
   const gathered: Post[] = [];
+  const observedIds: string[] = [];
   let nextToken: string | undefined;
 
   do {
@@ -139,7 +180,6 @@ async function fetchNewPostsUnlocked(
       "user.fields": USER_FIELDS,
     };
 
-    // X API: at most one of start_time / since_id.
     if (state.sinceId) {
       params.since_id = state.sinceId;
     } else {
@@ -151,46 +191,43 @@ async function fetchNewPostsUnlocked(
     }
 
     const page = parsePage(await options.client.searchRecent(params));
-    gathered.push(...page.posts);
+    for (const post of page.posts) {
+      gathered.push(post);
+      observedIds.push(...post.editHistoryIds, post.id);
+    }
     nextToken = page.nextToken;
   } while (nextToken);
 
-  const newPosts: Post[] = [];
-  for (const post of gathered) {
-    if (state.posts[post.id]) continue;
-    state.posts[post.id] = post;
-    newPosts.push(post);
-  }
+  const { added, updated } = mergePostsByEditHistory(state.posts, gathered);
 
-  const candidateIds = [
-    ...Object.keys(state.posts),
-    ...(state.sinceId ? [state.sinceId] : []),
-  ];
-  state.sinceId = maxId(candidateIds);
+  state.sinceId = advanceSinceId(state, observedIds);
   state.updatedAt = new Date().toISOString();
 
   const statePath = await saveEventState(options.dataDir, state);
 
-  newPosts.sort((a, b) => {
+  const byTime = (a: Post, b: Post) => {
     const t = Date.parse(a.createdAt) - Date.parse(b.createdAt);
     return t !== 0 ? t : a.id.localeCompare(b.id);
-  });
+  };
+  added.sort(byTime);
+  updated.sort(byTime);
 
   return {
     eventId: state.eventId,
     hashtag: state.hashtag,
-    newPostCount: newPosts.length,
+    newPostCount: added.length,
+    updatedPostCount: updated.length,
     totalPostCount: Object.keys(state.posts).length,
     sinceId: state.sinceId,
-    newPosts,
+    newPosts: added,
+    updatedPosts: updated,
     statePath,
   };
 }
 
 /**
  * Fetch only posts newer than the persisted since_id cursor.
- * First run uses start_time; later runs use since_id (mutually exclusive per X API).
- * Posts already in state are never re-stored (dedupe by id).
+ * Retweets are excluded. Edited posts collapse to one logical post (latest version).
  * The full load/fetch/save path is serialized per event (cross-process lock).
  */
 export async function fetchNewPosts(

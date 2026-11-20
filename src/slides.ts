@@ -9,14 +9,12 @@ const SLIDE_HOST_PATTERNS = [
   /(^|\.)figma\.com$/i,
 ];
 
-const URL_IN_TEXT =
-  /https?:\/\/[^\s<>"')\]]+/gi;
+const URL_IN_TEXT = /https?:\/\/[^\s<>"')\]]+/gi;
 
 export function isSlideHost(url: string): boolean {
   try {
     const host = new URL(url).hostname;
     if (SLIDE_HOST_PATTERNS.some((re) => re.test(host))) {
-      // Google Docs: only presentations count as slides
       if (/docs\.google\.com$/i.test(host)) {
         return /\/presentation\//i.test(url);
       }
@@ -47,6 +45,19 @@ export function collectPostUrls(post: Post): string[] {
   return [...new Set([...fromEntities, ...fromText])];
 }
 
+function sortLinks(links: SlideLink[]): SlideLink[] {
+  return [...links].sort((a, b) => {
+    // Materials first, then known slide hosts, then URL.
+    if (a.fromMaterials !== b.fromMaterials) {
+      return a.fromMaterials ? -1 : 1;
+    }
+    if (a.isSlideHost !== b.isSlideHost) {
+      return a.isSlideHost ? -1 : 1;
+    }
+    return a.url.localeCompare(b.url);
+  });
+}
+
 /**
  * Collect unique URLs from posts. Known slide hosts are flagged;
  * other URLs are still included (per product requirement).
@@ -63,19 +74,35 @@ export function extractSlideLinks(posts: Post[]): SlideLink[] {
         url,
         isSlideHost: isSlideHost(url),
         sourcePostId: post.id,
+        fromMaterials: false,
       });
     }
   }
 
-  // Prefer known slide hosts first for stable ordering
-  links.sort((a, b) => {
-    if (a.isSlideHost !== b.isSlideHost) {
-      return a.isSlideHost ? -1 : 1;
-    }
-    return a.url.localeCompare(b.url);
-  });
+  return sortLinks(links);
+}
 
-  return links;
+/**
+ * Merge optional timetable materials URL with URLs extracted from posts.
+ * Identical URLs are stored once; materials origin wins the label.
+ */
+export function mergeMaterialsAndPostLinks(
+  materialsUrl: string | undefined | null,
+  posts: Post[]
+): SlideLink[] {
+  const fromPosts = extractSlideLinks(posts);
+  const cleaned = materialsUrl?.trim() ? cleanUrl(materialsUrl.trim()) : "";
+  if (!cleaned) return fromPosts;
+
+  const materialsLink: SlideLink = {
+    url: cleaned,
+    isSlideHost: isSlideHost(cleaned),
+    sourcePostId: null,
+    fromMaterials: true,
+  };
+
+  const rest = fromPosts.filter((l) => l.url !== cleaned);
+  return sortLinks([materialsLink, ...rest]);
 }
 
 export function postUrl(post: Post): string {
